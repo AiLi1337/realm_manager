@@ -2,6 +2,7 @@
 realm一键转发脚本
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/AiLi1337/realm_manager/main/realm_manager.sh)
+```
 
 更快捷的添加和管理realm转发规则
 

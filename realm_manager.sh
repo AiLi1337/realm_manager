@@ -262,7 +262,7 @@ uninstall_realm() {
 show_menu() {
     clear
     echo -e "${BLUE}Realm 中转一键管理脚本${ENDCOLOR}"
-    echo -e "${GREEN}作者: Gemini & Google AI${ENDCOLOR}"
+    echo -e "${GREEN}作者: AiLi${ENDCOLOR}"
     print_divider
     echo "  1. 安装 Realm"
     echo "  2. 添加转发规则"

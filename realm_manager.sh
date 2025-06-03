@@ -2,9 +2,9 @@
 
 #====================================================
 #	System Request: Centos 7+ / Debian 8+ / Ubuntu 16+
-#	Author: Gemini
+#	Author: AiLi
 #	Description: Realm All-in-One Management Script
-#	Version: 1.0
+#	Version: 1.1 (User-friendly input update)
 #====================================================
 
 # 颜色定义
@@ -53,33 +53,24 @@ install_realm() {
     echo -e "${YELLOW}开始安装 Realm...${ENDCOLOR}"
     print_divider
     
-    # 下载并解压
     echo "正在从 GitHub 下载最新版本的 Realm..."
     if ! curl -fsSL ${REALM_LATEST_URL} | tar xz; then
         echo -e "${RED}下载或解压 Realm 失败，请检查网络或依赖。${ENDCOLOR}"
         exit 1
     fi
     
-    # 移动文件并授权
     echo "移动二进制文件到 /usr/local/bin/ ..."
     mv realm ${REALM_BIN_PATH}
     chmod +x ${REALM_BIN_PATH}
 
-    # 创建配置文件目录和基础配置
     echo "创建配置文件..."
     mkdir -p ${REALM_CONFIG_DIR}
     cat > ${REALM_CONFIG_PATH} <<EOF
 [log]
 level = "info"
 output = "/var/log/realm.log"
-
-# 下方是转发规则配置
-# [[endpoints]]
-# listen = "0.0.0.0:本地监听端口"
-# remote = "目标地址:目标端口"
 EOF
 
-    # 创建 systemd 服务文件
     echo "创建 Systemd 服务..."
     cat > ${REALM_SERVICE_PATH} <<EOF
 [Unit]
@@ -96,7 +87,6 @@ ExecStart=${REALM_BIN_PATH} -c ${REALM_CONFIG_PATH}
 WantedBy=multi-user.target
 EOF
 
-    # 重载 systemd 并启动 realm
     systemctl daemon-reload
     systemctl enable realm > /dev/null 2>&1
     
@@ -105,7 +95,7 @@ EOF
     echo -e "${YELLOW}默认开机自启已设置，但服务尚未启动，请添加转发规则后手动启动。${ENDCOLOR}"
 }
 
-# 2. 添加转发规则
+# 2. 添加转发规则 (已更新)
 add_rule() {
     if ! check_installation; then
         echo -e "${RED}错误: Realm 未安装，请先选择 '1' 进行安装。${ENDCOLOR}"
@@ -114,11 +104,16 @@ add_rule() {
 
     echo -e "${YELLOW}请输入要添加的转发规则信息:${ENDCOLOR}"
     read -p "本地监听端口 (例如 54000): " listen_port
-    read -p "远程目标地址 (例如 1.2.3.4:443 或 [2a01::1]:443): " remote_addr
+    read -p "远程目标地址 (IP或域名): " remote_addr
+    read -p "远程目标端口 (例如 443): " remote_port
 
-    # 简单验证
-    if [[ -z "$listen_port" || -z "$remote_addr" ]]; then
-        echo -e "${RED}错误: 端口和目标地址均不能为空。${ENDCOLOR}"
+    # 验证输入
+    if [[ -z "$listen_port" || -z "$remote_addr" || -z "$remote_port" ]]; then
+        echo -e "${RED}错误: 任何一项均不能为空。${ENDCOLOR}"
+        return
+    fi
+    if ! [[ "$listen_port" =~ ^[0-9]+$ && "$remote_port" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}错误: 端口号必须为纯数字。${ENDCOLOR}"
         return
     fi
     
@@ -127,8 +122,22 @@ add_rule() {
         return
     fi
 
+    local formatted_remote_addr
+
+    # 自动检测IPv6并添加括号
+    # 如果地址包含冒号“:”，且本身不以“[”开头，则判断为需要加括号的IPv6
+    if [[ "$remote_addr" == *":"* && "$remote_addr" != \[* ]]; then
+        echo -e "${BLUE}检测到IPv6地址，将自动添加括号。${ENDCOLOR}"
+        formatted_remote_addr="[${remote_addr}]"
+    else
+        # IPv4、域名或已加括号的IPv6地址，直接使用
+        formatted_remote_addr="${remote_addr}"
+    fi
+
+    local final_remote_str="${formatted_remote_addr}:${remote_port}"
+
     # 追加新规则到配置文件
-    echo -e "\n[[endpoints]]\nlisten = \"0.0.0.0:${listen_port}\"\nremote = \"${remote_addr}\"" >> ${REALM_CONFIG_PATH}
+    echo -e "\n[[endpoints]]\nlisten = \"0.0.0.0:${listen_port}\"\nremote = \"${final_remote_str}\"" >> ${REALM_CONFIG_PATH}
 
     echo -e "${GREEN}转发规则添加成功！正在重启 Realm 服务以应用配置...${ENDCOLOR}"
     systemctl restart realm
@@ -164,14 +173,11 @@ delete_rule() {
         return
     fi
 
-    # 检查规则是否存在
     if ! grep -q "listen = \"0.0.0.0:${port_to_delete}\"" ${REALM_CONFIG_PATH}; then
         echo -e "${RED}错误: 监听端口为 ${port_to_delete} 的规则不存在。${ENDCOLOR}"
         return
     fi
 
-    # 使用 awk 删除规则块 (安全且高效)
-    # 逻辑: 将每个 [[endpoints]] 块视为一个记录，如果不包含要删除的端口，就打印它
     awk -v port="${port_to_delete}" 'BEGIN{RS="\n\n"; ORS="\n\n"} !/listen = "0.0.0.0:'${port_to_delete}'"/' ${REALM_CONFIG_PATH} > ${REALM_CONFIG_PATH}.tmp
     mv ${REALM_CONFIG_PATH}.tmp ${REALM_CONFIG_PATH}
 
@@ -195,10 +201,11 @@ show_rules() {
     
     echo -e "${BLUE}当前 Realm 配置文件内容如下:${ENDCOLOR}"
     print_divider
-    # 使用 grep 和 sed 美化输出
-    grep -E 'listen|remote' ${REALM_CONFIG_PATH} | sed 's/listen/本地监听/g' | sed 's/remote/远程目标/g' | sed 's/[="]/ /g' | awk '{printf "  %-20s -> %-20s\n", $2, $4}'
     if ! grep -q "\[\[endpoints\]\]" ${REALM_CONFIG_PATH}; then
         echo -e "${YELLOW}  (当前无任何转发规则)${ENDCOLOR}"
+    else
+        # 使用 grep 和 sed 美化输出
+        grep -E 'listen|remote' ${REALM_CONFIG_PATH} | sed 's/listen/本地监听/g' | sed 's/remote/远程目标/g' | sed 's/[="]/ /g' | awk '{printf "  %-25s -> %-25s\n", $2, $4}'
     fi
     print_divider
 }
@@ -261,7 +268,7 @@ uninstall_realm() {
 # 主菜单
 show_menu() {
     clear
-    echo -e "${BLUE}Realm 中转一键管理脚本${ENDCOLOR}"
+    echo -e "${BLUE}Realm 中转一键管理脚本 (v1.1)${ENDCOLOR}"
     echo -e "${GREEN}作者: AiLi${ENDCOLOR}"
     print_divider
     echo "  1. 安装 Realm"
@@ -273,7 +280,6 @@ show_menu() {
     echo -e "  0. ${RED}退出脚本${ENDCOLOR}"
     print_divider
     
-    # 检查服务状态并显示
     if check_installation; then
         if systemctl is-active --quiet realm; then
             echo -e "服务状态: ${GREEN}运行中${ENDCOLOR}"

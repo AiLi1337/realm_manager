@@ -14,6 +14,7 @@ bash <(curl -sL [https://raw.githubusercontent.com/AiLi1337/realm_manager/main/r
 ```
 
 ✨ 功能特性
+
 菜单化管理：通过交互式菜单完成所有操作，无需记忆复杂命令。
 一键安装/卸载：全自动处理 realm 的安装、配置和卸载。
 智能添加规则：自动检测 IPv6 地址并添加括号。

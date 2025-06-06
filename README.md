@@ -12,6 +12,11 @@
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/AiLi1337/realm_manager/main/realm_manager.sh)
 ```
+国内一键命令
+
+```bash
+bash <(curl -sL https://gitee.com/AiLi1337/realm_manager/raw/master/realm_manager.sh)
+```
 
 ✨ 功能特性
 

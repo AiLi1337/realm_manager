@@ -4,7 +4,7 @@
 #	System Request: Centos 7+ / Debian 8+ / Ubuntu 16+
 #	Author: AiLi1337 & Gemini
 #	Description: Realm All-in-One Management Script
-#	Version: 1.9 (Fixed deletion summary bug)
+#	Version: 2.0 (Stable & Bug-Fixed)
 #====================================================
 
 # --- Minimal Color Definition ---
@@ -121,12 +121,15 @@ add_rule() {
     fi
 }
 
-# 3. 删除转发规则 (已修正)
+# 3. 删除转发规则 (v2.0 终极修正)
 delete_rule() {
     if ! check_installation; then echo "错误: Realm 未安装。"; return; fi
     
-    mapfile -t rule_blocks < <(awk 'BEGIN{RS="[[endpoints]]"} NR>1' "${REALM_CONFIG_PATH}")
-    if [[ ${#rule_blocks[@]} -eq 0 ]]; then echo "当前没有任何转发规则可供删除。"; return; fi
+    # 将所有 endpoint 的 listen 和 remote 分别读入数组
+    mapfile -t listen_lines < <(grep 'listen =' "${REALM_CONFIG_PATH}" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+    mapfile -t remote_lines < <(grep 'remote =' "${REALM_CONFIG_PATH}" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+
+    if [[ ${#listen_lines[@]} -eq 0 ]]; then echo "当前没有任何转发规则可供删除。"; return; fi
 
     echo "当前存在的转发规则如下:"; show_rules true; echo
     read -p "请输入要删除的规则序号 (可输入多个, 用空格或逗号隔开): " user_input
@@ -135,24 +138,22 @@ delete_rule() {
     if [[ ${#to_delete_indices[@]} -eq 0 ]]; then echo "未输入任何序号，操作已取消。"; return; fi
 
     local -a valid_indices_to_delete; local -a rules_to_delete_summary
-    local max_index=${#rule_blocks[@]}
+    local -a listen_ports_to_keep
+    local max_index=${#listen_lines[@]}
+
+    # 验证输入并收集待删除规则的摘要
     for index_str in "${to_delete_indices[@]}"; do
-        # 确保输入是数字且在范围内
         if ! [[ "$index_str" =~ ^[1-9][0-9]*$ && "$index_str" -le "$max_index" ]]; then
             echo "错误: 输入的序号 '${index_str}' 无效或超出范围 (1-${max_index})。"
             return
         fi
         
-        local index=$((index_str)) # 转换为数字
-        # 防止重复添加
+        local index=$((index_str))
         if [[ ! " ${valid_indices_to_delete[*]} " =~ " ${index} " ]]; then
             valid_indices_to_delete+=("$index")
-            # --- 关键BUG修复 ---
-            # 直接从对应的规则块中提取信息，而不是从整个文件中提取
-            local block_content="${rule_blocks[$((index - 1))]}"
-            local listen_info=$(echo "$block_content" | grep 'listen =' | awk -F'"' '{print $2}')
-            local remote_info=$(echo "$block_content" | grep 'remote =' | awk -F'"' '{print $2}')
-            rules_to_delete_summary+=("- 规则 #${index}: ${listen_info} -> ${remote_info}")
+            # --- v2.0 BUG 修复：直接从数组中按索引取值，保证准确无误 ---
+            local summary="- 规则 #${index}: ${listen_lines[$((index - 1))]} -> ${remote_lines[$((index - 1))]}"
+            rules_to_delete_summary+=("$summary")
             # --- 修复结束 ---
         fi
     done
@@ -163,21 +164,20 @@ delete_rule() {
     read -p "确认删除吗? (y/n): " confirm
     if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then echo "操作已取消。"; return; fi
     
+    # 重建配置文件
     local temp_config_file=$(mktemp)
+    # 先写入日志部分
     awk '/\[log\]/{p=1} p && !/\[\[endpoints\]\]/{print} /\[\[endpoints\]\]/{p=0}' "${REALM_CONFIG_PATH}" > "${temp_config_file}"
 
-    for i in "${!rule_blocks[@]}"; do
+    # 仅写入需要保留的规则
+    for i in "${!listen_lines[@]}"; do
         local current_index=$((i + 1))
         if [[ ! " ${valid_indices_to_delete[*]} " =~ " ${current_index} " ]]; then
-            # 注意：这里的 rule_blocks[$i] 包含了前后的换行符，所以不需要再加 \n
-            echo "[[endpoints]]" >> "${temp_config_file}"
-            echo "${rule_blocks[$i]}" >> "${temp_config_file}"
+             echo -e "\n[[endpoints]]\nlisten = \"${listen_lines[$i]}\"\nremote = \"${remote_lines[$i]}\"" >> "${temp_config_file}"
         fi
     done
 
-    # 移除可能的多余空行
-    awk 'NF' "${temp_config_file}" > "${REALM_CONFIG_PATH}"
-    rm "${temp_config_file}"
+    mv "${temp_config_file}" "${REALM_CONFIG_PATH}"
     
     # 检查删除后是否还有规则
     if ! grep -q "\[\[endpoints\]\]" "${REALM_CONFIG_PATH}" 2>/dev/null; then
@@ -213,17 +213,14 @@ manage_service() {
     read -p "请输入选项 [1-6]: " service_choice
     case ${service_choice} in
         1)
-            systemctl start realm
-            sleep 1
+            systemctl start realm; sleep 1
             if systemctl is-active --quiet realm; then echo "Realm 已成功启动。"; else echo -e "${G_RED}Realm 启动失败！请检查日志。${NC}"; fi
             ;;
         2)
-            systemctl stop realm
-            echo "Realm 已停止。"
+            systemctl stop realm; echo "Realm 已停止。"
             ;;
         3)
-            systemctl restart realm
-            sleep 1
+            systemctl restart realm; sleep 1
             if systemctl is-active --quiet realm; then echo "Realm 已成功重启。"; else echo -e "${G_RED}Realm 重启失败！请检查日志。${NC}"; fi
             ;;
         4) systemctl status realm;;
@@ -250,7 +247,7 @@ show_menu() {
     if check_installation; then
         if systemctl is-active --quiet realm; then state_color=${G_GREEN}; realm_state="运行中"; else state_color=${G_RED}; realm_state="已停止"; fi
     else state_color=${G_YELLOW}; realm_state="未安装"; fi
-    echo "---- Realm 中转一键管理脚本 (v1.9) ----"
+    echo "---- Realm 中转一键管理脚本 (v2.0) ----"
     echo " 作者: AiLi1337 & Gemini"
     echo
     echo "1. 安装 Realm"

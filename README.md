@@ -10,7 +10,7 @@
 
 #### 标准命令
 ```bash
-bash <(curl -sL [https://raw.githubusercontent.com/AiLi1337/realm_manager/main/realm_manager.sh](https://raw.githubusercontent.com/AiLi1337/realm_manager/main/realm_manager.sh))
+bash <(curl -sL https://raw.githubusercontent.com/AiLi1337/realm_manager/main/realm_manager.sh)
 ```
 
 ✨ 功能特性

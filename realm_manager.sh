@@ -4,7 +4,7 @@
 #	System Request: Centos 7+ / Debian 8+ / Ubuntu 16+
 #	Author: AiLi1337
 #	Description: Realm All-in-One Management Script
-#	Version: 1.6 (Minimalist Final Version)
+#	Version: 1.7 (Removed default port suggestion)
 #====================================================
 
 # --- Minimal Color Definition ---
@@ -89,7 +89,7 @@ EOF
     echo "默认开机自启已设置，但服务尚未启动，请添加转发规则后手动启动。"
 }
 
-# 2. 添加转发规则
+# 2. 添加转发规则 (已修改)
 add_rule() {
     if ! check_installation; then
         echo "错误: Realm 未安装，请先选择 '1' 进行安装。"
@@ -97,17 +97,9 @@ add_rule() {
     fi
 
     echo "请输入要添加的转发规则信息:"
-    local last_port
-    last_port=$(grep 'listen =' "${REALM_CONFIG_PATH}" 2>/dev/null | awk -F'[:"]' '{print $5}' | sort -nr | head -n 1)
-    
-    local default_port
-    if [[ -z "$last_port" ]]; then
-        default_port=54000
-    else
-        default_port=$((last_port + 1))
-    fi
 
-    read -e -p "本地监听端口 (默认为 ${default_port}): " -i "${default_port}" listen_port
+    # 移除了自动推荐端口的逻辑
+    read -p "本地监听端口 (例如 54000): " listen_port
     read -p "远程目标地址 (IP或域名): " remote_addr
     read -p "远程目标端口 (例如 443): " remote_port
 
@@ -271,7 +263,7 @@ uninstall_realm() {
     echo "Realm 已成功卸载。"
 }
 
-# 主菜单 (v1.6)
+# 主菜单
 show_menu() {
     clear; local state_color; local realm_state
     if check_installation; then
@@ -284,7 +276,7 @@ show_menu() {
         state_color=${G_YELLOW}; realm_state="未安装"
     fi
 
-    echo "---- Realm 中转一键管理脚本 (v1.6) ----"
+    echo "---- Realm 中转一键管理脚本 (v1.7) ----"
     echo " 作者: AiLi1337"
     echo
     echo "1. 安装 Realm"

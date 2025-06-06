@@ -11,3 +11,13 @@
 #### 标准命令
 ```bash
 bash <(curl -sL [https://raw.githubusercontent.com/AiLi1337/realm_manager/main/realm_manager.sh](https://raw.githubusercontent.com/AiLi1337/realm_manager/main/realm_manager.sh))
+```
+
+✨ 功能特性
+菜单化管理：通过交互式菜单完成所有操作，无需记忆复杂命令。
+一键安装/卸载：全自动处理 realm 的安装、配置和卸载。
+智能添加规则：自动检测 IPv6 地址并添加括号。
+表格化规则列表：清晰地展示所有转发规则，并带有序号。
+按序号批量删除：可一次选择多个序号，安全、高效地删除多条规则。
+服务管理：快捷地启/停/重启服务、查看状态和设置开机自启。
+健壮可靠：代码经过多轮迭代和BUG修复，全面提升了稳定性、容错能力和错误提示。

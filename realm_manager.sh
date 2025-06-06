@@ -2,7 +2,7 @@
 
 #====================================================
 #	System Request: Centos 7+ / Debian 8+ / Ubuntu 16+
-#	Author: AiLi
+#	Author: AiLi1337
 #	Description: Realm All-in-One Management Script
 #	Version: 1.1 (User-friendly input update)
 #====================================================
@@ -269,7 +269,7 @@ uninstall_realm() {
 show_menu() {
     clear
     echo -e "${BLUE}Realm 中转一键管理脚本 (v1.1)${ENDCOLOR}"
-    echo -e "${GREEN}作者: AiLi${ENDCOLOR}"
+    echo -e "${GREEN}作者: AiLi1337${ENDCOLOR}"
     print_divider
     echo "  1. 安装 Realm"
     echo "  2. 添加转发规则"

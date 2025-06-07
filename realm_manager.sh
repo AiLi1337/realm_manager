@@ -3,11 +3,11 @@
 #=================================================
 #	System Required: Centos 7+/Debian 8+/Ubuntu 16+
 #	Description: realm All-in-one script (GitHub International Version)
-#	Version: 2.9-github (Final Polished)
+#	Version: 2.9.1-github (Final Polished)
 #	Author: AiLi1337
 #=================================================
 
-sh_ver="2.9-github"
+sh_ver="2.9.1-github"
 config_file="/etc/realm/config.json"
 service_file="/etc/systemd/system/realm.service"
 bin_file="/usr/local/bin/realm"
@@ -230,13 +230,94 @@ manage_realm_service() {
 }
 
 add_tls_ws_rule() {
-    # Manual TLS+WS rule logic remains the same
-    # ... (code omitted for brevity but is identical to v2.8)
+    check_if_installed && check_and_install_jq || return 1
+    echo "--- 添加一个新的 TLS + WebSocket 转发规则 (手动证书) ---"
+    
+    read -p "请输入 realm 的监听端口 (例如 443): " local_port
+    if [[ -z "$local_port" ]]; then echo -e "${red}错误：输入不能为空！${reset}"; return; fi
+    if jq -e ".endpoints[].listen | select(. == \"[::]:$local_port\")" "$config_file" > /dev/null; then
+        echo -e "${red}错误: 监听端口 $local_port 已存在，无法重复添加。${reset}"; return; fi
+
+    read -p "请输入要转发到的目标IP或域名: " remote_ip
+    read -p "请输入要转发到的目标端口: " remote_port
+    read -p "请输入您的域名 (用于TLS证书): " domain_name
+    read -p "请输入 WebSocket 路径 (以'/'开头, 例如 /ws): " ws_path
+    read -p "请输入证书公钥(cert)文件的绝对路径: " cert_path
+    read -p "请输入证书私钥(key)文件的绝对路径: " key_path
+
+    if [[ -z "$remote_ip" || -z "$remote_port" || -z "$domain_name" || -z "$ws_path" || -z "$cert_path" || -z "$key_path" ]]; then
+        echo "错误：所有选项都不能为空！"; return 1
+    fi
+
+    if [[ ! -f "$cert_path" || ! -f "$key_path" ]]; then echo "错误：找不到证书或私钥文件，请检查路径。"; return 1; fi
+
+    local remote_address="${remote_ip}:${remote_port}"
+    local new_endpoint
+    new_endpoint=$(jq -n --arg lp "$local_port" --arg ra "$remote_address" --arg dn "$domain_name" --arg wp "$ws_path" --arg cp "$cert_path" --arg kp "$key_path" \
+        '{"listen":"[::]:\($lp)","remote":$ra,"options":{"protocol":"ws","path":$wp,"tls":{"server_name":$dn,"certificates":{"cert_file":$cp,"key_file":$kp}}}}')
+
+    local tmp_json=$(mktemp)
+    jq ".endpoints += [$new_endpoint]" "$config_file" > "$tmp_json" && mv "$tmp_json" "$config_file"
+
+    echo -e "${green}TLS+WS 转发规则已成功添加！${reset}"
+    prompt_for_restart
 }
 
 add_tls_ws_rule_auto() {
-    # Auto TLS+WS rule logic remains the same
-    # ... (code omitted for brevity but is identical to v2.8)
+    check_if_installed && check_and_install_jq || return 1
+    echo "--- (全自动证书) 添加一个新的 TLS + WebSocket 转发规则 ---"
+    echo "前提: 1. 域名已解析到本服务器IP。 2. 80端口未被占用。"
+    
+    read -p "请输入 realm 的监听端口 (例如 443): " local_port
+    if [[ -z "$local_port" ]]; then echo -e "${red}错误：输入不能为空！${reset}"; return; fi
+    if jq -e ".endpoints[].listen | select(. == \"[::]:$local_port\")" "$config_file" > /dev/null; then
+        echo -e "${red}错误: 监听端口 $local_port 已存在，无法重复添加。${reset}"; return; fi
+
+    read -p "请输入要转发到的目标IP或域名: " remote_ip
+    read -p "请输入要转发到的目标端口: " remote_port
+    read -p "请输入您已解析好的域名: " domain_name
+    read -p "请输入 WebSocket 路径 (以'/'开头, 例如 /ws): " ws_path
+
+    if [[ -z "$remote_ip" || -z "$remote_port" || -z "$domain_name" || -z "$ws_path" ]]; then
+        echo "错误：所有选项都不能为空！"; return 1
+    fi
+
+    if [ ! -f "/root/.acme.sh/acme.sh" ]; then
+        echo "正在从 GitHub 安装 acme.sh..."
+        curl https://get.acme.sh | sh -s email=my@example.com
+        if [ $? -ne 0 ]; then echo "acme.sh 安装失败。"; return 1; fi
+        /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+    fi
+
+    echo "正在为域名 ${domain_name} 申请证书..."
+    /root/.acme.sh/acme.sh --issue -d "$domain_name" --standalone --force
+    if [ $? -ne 0 ]; then echo "证书申请失败，请检查域名解析和80端口。"; return 1; fi
+
+    local cert_path="/root/.acme.sh/${domain_name}_ecc/fullchain.cer"
+    local key_path="/root/.acme.sh/${domain_name}_ecc/${domain_name}.key"
+    if [ ! -f "$cert_path" ]; then
+        cert_path="/root/.acme.sh/${domain_name}/fullchain.cer"
+        key_path="/root/.acme.sh/${domain_name}/${domain_name}.key"
+    fi
+    if [ ! -f "$cert_path" ]; then
+        echo "错误：找不到申请好的证书文件，acme.sh 可能出现未知问题。"; return 1;
+    fi
+    echo "证书申请成功，路径: $cert_path"
+
+    local remote_address="${remote_ip}:${remote_port}"
+    local new_endpoint
+    new_endpoint=$(jq -n --arg lp "$local_port" --arg ra "$remote_address" --arg dn "$domain_name" --arg wp "$ws_path" --arg cp "$cert_path" --arg kp "$key_path" \
+        '{"listen":"[::]:\($lp)","remote":$ra,"options":{"protocol":"ws","path":$wp,"tls":{"server_name":$dn,"certificates":{"cert_file":$cp,"key_file":$kp}}}}')
+
+    local tmp_json=$(mktemp)
+    jq ".endpoints += [$new_endpoint]" "$config_file" > "$tmp_json" && mv "$tmp_json" "$config_file"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${green}新规则已成功添加，配置已自动完成！${reset}"
+        prompt_for_restart
+    else
+        echo -e "${red}写入 realm 配置文件失败！请检查权限。${reset}"
+    fi
 }
 
 show_menu() {

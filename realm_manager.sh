@@ -3,11 +3,11 @@
 #=================================================
 #	System Required: Centos 7+/Debian 8+/Ubuntu 16+
 #	Description: realm All-in-one script (GitHub International Version)
-#	Version: 2.4-github
-#	Author: AiLi
+#	Version: 2.7-github (Live Status Display)
+#	Author: AiLi1337
 #=================================================
 
-sh_ver="2.4-github"
+sh_ver="2.7-github"
 config_file="/etc/realm/config.json"
 service_file="/etc/systemd/system/realm.service"
 
@@ -49,6 +49,35 @@ prompt_for_restart() {
     else
         echo "操作已取消。请记得稍后手动重启 realm。"
     fi
+}
+
+get_realm_status_string() {
+    local green="\033[0;32m"
+    local red="\033[0;31m"
+    local yellow="\033[0;33m"
+    local reset="\033[0m"
+
+    if [ ! -f "$service_file" ]; then
+        echo -e "${red}未安装${reset}"
+        return
+    fi
+
+    local status
+    status=$(systemctl is-active realm.service)
+    case "$status" in
+        "active")
+            echo -e "${green}运行中${reset}"
+            ;;
+        "inactive")
+            echo -e "${yellow}已停止${reset}"
+            ;;
+        "failed")
+            echo -e "${red}运行失败${reset}"
+            ;;
+        *)
+            echo -e "${yellow}状态未知 (${status})${reset}"
+            ;;
+    esac
 }
 
 #--- Core Functions ---#
@@ -118,7 +147,7 @@ delete_forwarding_rule() {
     check_and_install_jq || return 1
     
     echo "--- 当前转发规则 ---"
-    jq '.endpoints[] | .listen + " -> " + .remote' "$config_file"
+    jq -r '.endpoints[] | .listen + " -> " + .remote' "$config_file"
     echo "--------------------"
     
     read -p "请输入要删除的规则的【监听端口】(不带冒号): " port_to_delete
@@ -135,20 +164,24 @@ delete_forwarding_rule() {
 }
 
 display_forwarding_rules() {
+    if [ ! -f "$config_file" ]; then
+        echo "配置文件不存在，请先安装realm或添加一条规则！"
+        return
+    fi
     check_and_install_jq || return 1
     echo "=================================="
-    jq -r '.endpoints[] | "监听: \(.listen)\n转发至: \(.remote)\n选项: \(.options // "无")\n----------------------------------"' "$config_file"
+    jq -r '.endpoints[] | "监听: \(.listen)\n转发至: \(.remote)\n选项: \(.options | (if . == null then "无" else tostring end))\n----------------------------------"' "$config_file"
     echo "=================================="
 }
 
 manage_realm_service() {
-    PS3="请选择操作: "
-    select opt in "启动" "停止" "重启" "查看状态"; do
+    PS3="请选择操作 (输入数字): "
+    select opt in "启动服务" "停止服务" "重启服务" "返回上级"; do
         case $opt in
-            "启动") systemctl start realm; break ;;
-            "停止") systemctl stop realm; break ;;
-            "重启") systemctl restart realm; break ;;
-            "查看状态") systemctl status realm; break ;;
+            "启动服务") systemctl start realm; echo "服务已尝试启动。"; break ;;
+            "停止服务") systemctl stop realm; echo "服务已尝试停止。"; break ;;
+            "重启服务") systemctl restart realm; echo "服务已尝试重启。"; break ;;
+            "返回上级") break ;;
             *) echo "无效选项 $REPLY";;
         esac
     done
@@ -241,18 +274,26 @@ add_tls_ws_rule_auto() {
 }
 
 show_menu() {
+    clear
+    local realm_status
+    realm_status=$(get_realm_status_string)
+
     echo -e "
-    realm 一键管理脚本 ${sh_ver}
-    --- AiLi1337 ---
-    
-    1. 安装/更新 realm
-    2. 添加普通转发规则
+    ---- Realm 中转一键管理脚本 (v${sh_ver}) ----
+    作者: AiLi1337
+
+    1. 安装/更新 Realm
+    2. 添加转发规则
     3. 删除转发规则
-    4. 查看所有规则
-    5. 管理 realm 服务
+    4. 显示已有转发规则
+    5. Realm 服务管理 (启/停/重启)
     6. 添加TLS+WS规则 (手动证书)
     7. 添加TLS+WS规则 (自动证书)
+    
     0. 退出脚本
+    ---------------------------------------------------
+    服务状态: ${realm_status}
+    ---------------------------------------------------
     "
     read -p "请输入选项 [0-7]: " choice
 }
@@ -270,7 +311,7 @@ main() {
             6) add_tls_ws_rule ;;
             7) add_tls_ws_rule_auto ;;
             0) exit 0 ;;
-            *) echo -e "无效输入，请重新输入" && sleep 2 ;;
+            *) echo -e "\n无效输入，请重新输入" ;;
         esac
         echo -e "\n按任意键返回主菜单..."
         read -n 1

@@ -1,285 +1,269 @@
 #!/bin/bash
 
-#=================================================
-#	System Required: Centos 7+/Debian 8+/Ubuntu 16+
-#	Description: realm All-in-one script (GitHub International Version)
-#	Version: 3.1-github (Pinned to stable realm v2.5.2)
+#====================================================
+#	System Request: Centos 7+ / Debian 8+ / Ubuntu 16+
 #	Author: AiLi1337
-#=================================================
+#	Description: Realm All-in-One Management Script
+#	Version: 2.1 (Robustness & Refinement Update)
+#====================================================
 
-sh_ver="3.1-github"
-config_file="/etc/realm/config.json"
-service_file="/etc/systemd/system/realm.service"
-bin_file="/usr/local/bin/realm"
-log_file="/var/log/realm.log"
+# --- Minimal Color Definition ---
+G_RED="\033[31m"
+G_GREEN="\033[32m"
+G_YELLOW="\033[33m"
+NC="\033[0m" # No Color
 
-#--- Color Codes ---#
-green="\033[0;32m"
-red="\033[0;31m"
-yellow="\033[0;33m"
-reset="\033[0m"
+# 全局变量
+REALM_BIN_PATH="/usr/local/bin/realm"
+REALM_CONFIG_DIR="/etc/realm"
+REALM_CONFIG_PATH="${REALM_CONFIG_DIR}/config.toml"
+REALM_SERVICE_PATH="/etc/systemd/system/realm.service"
+REALM_LATEST_URL="https://github.com/zhboner/realm/releases/latest/download/realm-x86_64-unknown-linux-gnu.tar.gz"
 
-#--- Helper Functions ---#
-check_root(){
-	[[ $EUID -ne 0 ]] && echo -e "${red}错误: 必须使用root用户运行此脚本！${reset}\n" && exit 1
+# 检查是否为 root 用户
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "错误: 此脚本必须以 root 权限运行！"
+        exit 1
+    fi
 }
 
-check_arch() {
-    case $(uname -m) in
-        "x86_64") arch="x86_64" ;;
-        "aarch64") arch="aarch64" ;;
-        *) echo -e "${red}错误: 不支持的架构 $(uname -m)${reset}"; exit 1 ;;
-    esac
-}
-
-check_if_installed() {
-    if [ ! -f "$config_file" ]; then
-        echo -e "${yellow}提示: Realm 未安装或配置文件不存在，请先执行安装。${reset}"
+# 检查 realm 是否已安装
+check_installation() {
+    if [[ -f "${REALM_BIN_PATH}" ]]; then
+        return 0
+    else
         return 1
     fi
-    return 0
 }
 
-check_and_install_pkg() {
-    local pkg_name=$1
-    if ! command -v "$pkg_name" &> /dev/null; then
-        echo "依赖工具 ${pkg_name} 未安装，正在尝试自动安装..."
-        if command -v apt-get &> /dev/null; then
-            apt-get update && apt-get install -y "$pkg_name"
-        elif command -v yum &> /dev/null; then
-            yum install -y "$pkg_name"
-        fi
-        if ! command -v "$pkg_name" &> /dev/null; then
-            echo -e "${red}错误：${pkg_name} 自动安装失败，请手动安装后重试。${reset}"
-            return 1
-        fi
-    fi
-    return 0
-}
-
-prompt_for_restart() {
-    read -p "配置已修改，是否立即重启 realm 服务以应用新规则? (y/n): " confirm
-    if [[ "$confirm" =~ ^[yY]$ ]]; then
-        echo "正在重启 realm..."
-        systemctl restart realm
-        echo -e "${green}realm 重启完成。${reset}"
+# 检查并重启 realm 服务
+restart_realm() {
+    echo "正在应用配置并重启 Realm 服务..."
+    systemctl restart realm
+    sleep 1 # 等待服务状态更新
+    if systemctl is-active --quiet realm; then
+        echo -e "${G_GREEN}Realm 服务已成功重启。${NC}"
     else
-        echo "操作已取消。请记得稍后手动重启 realm。"
+        echo -e "${G_RED}Realm 服务重启失败！${NC}"
+        echo "以下是最新的10条日志，请检查错误信息:"
+        journalctl -n 10 -u realm --no-pager
     fi
 }
 
-get_realm_status_string() {
-    if [ ! -f "$service_file" ]; then
-        echo -e "${red}未安装${reset}"
-        return
-    fi
-    local status
-    status=$(systemctl is-active realm.service)
-    case "$status" in
-        "active") echo -e "${green}运行中${reset}" ;;
-        "inactive") echo -e "${yellow}已停止${reset}" ;;
-        "failed") echo -e "${red}运行失败${reset}" ;;
-        *) echo -e "${yellow}状态未知 (${status})${reset}" ;;
-    esac
-}
-
-#--- Core Functions ---#
+# 1. 安装 realm
 install_realm() {
-    if [ -f "$bin_file" ]; then
-        echo -e "${yellow}Realm 已安装。${reset}"
-        read -p "是否覆盖并更新到指定的稳定版本 (v2.5.2)? (y/n): " confirm_update
-        if ! [[ "$confirm_update" =~ ^[yY]$ ]]; then
-            echo "更新操作已取消。"
-            return
-        fi
-    fi
-
-    check_arch
-    # 锁定下载链接到已知兼容的 v2.5.2 版本
-    local download_url="https://github.com/zhboner/realm/releases/download/v2.5.2/realm-$arch-unknown-linux-gnu.tar.gz"
-    
-    echo "正在从 GitHub 官方源下载 realm 稳定版 (v2.5.2)..."
-    wget --no-check-certificate -O realm.tar.gz "$download_url" || { echo -e "${red}下载失败!${reset}"; exit 1; }
-    
-    tar -xzf realm.tar.gz
-    mv realm "$bin_file"
-    chmod +x "$bin_file"
-    
-    mkdir -p /etc/realm
-    
-    if [ ! -f "$config_file" ]; then
-        echo '{"log":{"level":"warn","output":"/var/log/realm.log"},"network":{"no_tcp":false,"use_udp":true},"endpoints":[]}' > "$config_file"
-    fi
-    
-    # 确保服务文件使用 -c 参数指向 .json 文件
-    echo "[Unit]
-Description=realm
-After=network-online.target
+    if check_installation; then echo -e "${G_GREEN}Realm 已安装，无需重复操作。${NC}"; return; fi
+    echo "开始安装 Realm..."
+    echo "------------------------------------------------------------"
+    if ! command -v curl &> /dev/null; then echo -e "${G_RED}错误: curl 未安装，请先安装 curl。${NC}"; exit 1; fi
+    echo "正在从 GitHub 下载最新版本的 Realm..."
+    if ! curl -fsSL ${REALM_LATEST_URL} | tar xz; then echo -e "${G_RED}下载或解压 Realm 失败，请检查网络或依赖。${NC}"; exit 1; fi
+    echo "移动二进制文件到 /usr/local/bin/ ..."
+    mv realm ${REALM_BIN_PATH}
+    chmod +x ${REALM_BIN_PATH}
+    echo "创建配置文件..."
+    mkdir -p ${REALM_CONFIG_DIR}
+    cat > ${REALM_CONFIG_PATH} <<EOF
+[log]
+level = "info"
+output = "/var/log/realm.log"
+EOF
+    echo "创建 Systemd 服务..."
+    cat > ${REALM_SERVICE_PATH} <<EOF
+[Unit]
+Description=Realm Binary Custom Service
+After=network.target
 [Service]
 Type=simple
 User=root
-Restart=on-failure
-RestartSec=5s
-ExecStart=$bin_file -c $config_file
+Restart=always
+ExecStart=${REALM_BIN_PATH} -c ${REALM_CONFIG_PATH}
 [Install]
-WantedBy=multi-user.target" > "$service_file"
-    
-    systemctl daemon-reload
-    systemctl enable realm
-    systemctl start realm
-    
-    echo -e "${green}realm 安装/更新并启动成功！${reset}"
-    rm -f realm.tar.gz
-}
-
-uninstall_realm() {
-    check_if_installed || return 1
-    echo -e "${yellow}警告：此操作将卸载 Realm 并删除其所有配置文件！${reset}"
-    read -p "您确定要继续吗? (y/n): " confirm
-    if ! [[ "$confirm" =~ ^[yY]$ ]]; then
-        echo "卸载已取消。"
-        return
-    fi
-
-    systemctl stop realm && systemctl disable realm
-    rm -f "$service_file" "$bin_file" "$log_file"
-    rm -rf "/etc/realm"
-    systemctl daemon-reload
-
-    if [ -d "/root/.acme.sh" ]; then
-        read -p "检测到 acme.sh，是否需要一并卸载? (y/n): " confirm_acme
-        if [[ "$confirm_acme" =~ ^[yY]$ ]]; then
-            /root/.acme.sh/acme.sh --uninstall
-            echo -e "${yellow}acme.sh 已卸载。${reset}"
-        fi
-    fi
-    echo -e "${green}Realm 已成功从您的系统中卸载。${reset}"
-}
-
-add_forwarding_rule() {
-    check_if_installed && check_and_install_pkg "jq" || return 1
-    
-    read -p "请输入本地监听端口: " local_port
-    if [[ -z "$local_port" ]]; then echo -e "${red}错误：输入不能为空！${reset}"; return; fi
-    
-    if jq -e ".endpoints[].listen | select(. == \"[::]:$local_port\")" "$config_file" > /dev/null; then
-        echo -e "${red}错误: 监听端口 $local_port 已存在，无法重复添加。${reset}"; return; fi
-
-    read -p "请输入远程目标IP或域名: " remote_ip
-    read -p "请输入远程目标端口: " remote_port
-    if [[ -z "$remote_ip" || -z "$remote_port" ]]; then echo -e "${red}错误：输入不能为空！${reset}"; return; fi
-    
-    local remote_address="${remote_ip}:${remote_port}"
-    local new_endpoint
-    new_endpoint=$(jq -n --arg lp "$local_port" --arg ra "$remote_address" '{listen: "[::]:\($lp)", remote: $ra}')
-    
-    local tmp_json=$(mktemp)
-    jq ".endpoints += [$new_endpoint]" "$config_file" > "$tmp_json" && mv "$tmp_json" "$config_file"
-    
-    echo -e "${green}转发规则添加成功！${reset}"
-    prompt_for_restart
-}
-
-delete_forwarding_rule() {
-    check_if_installed && check_and_install_pkg "jq" || return 1
-    
-    local rules_count
-    rules_count=$(jq '.endpoints | length' "$config_file")
-    if [ "$rules_count" -eq 0 ]; then
-        echo -e "${yellow}当前无任何转发规则可删除。${reset}"; return; fi
-
-    echo "--- 请选择要删除的转发规则 ---"
-    jq -r '.endpoints[] | "\(.listen) -> \(.remote)"' "$config_file" | cat -n
-    echo "--------------------------------"
-    
-    read -p "请输入规则的序号 [1-$rules_count]: " rule_num
-    if ! [[ "$rule_num" =~ ^[0-9]+$ ]] || [ "$rule_num" -lt 1 ] || [ "$rule_num" -gt "$rules_count" ]; then
-        echo -e "${red}错误: 无效的序号。${reset}"; return; fi
-    
-    local index_to_delete=$((rule_num - 1))
-    local tmp_json=$(mktemp)
-    jq "del(.endpoints[$index_to_delete])" "$config_file" > "$tmp_json" && mv "$tmp_json" "$config_file"
-    
-    echo -e "${green}规则 [${rule_num}] 已删除！${reset}"
-    prompt_for_restart
-}
-
-display_forwarding_rules() {
-    check_if_installed && check_and_install_pkg "jq" || return 1
-    echo "=================================="
-    jq -r '.endpoints[] | "监听: \(.listen)\n转发至: \(.remote)\n选项: \(.options | (if . == null then "无" else tostring end))\n----------------------------------"' "$config_file"
-    echo "=================================="
-}
-
-manage_realm_service() {
-    check_if_installed || return 1
-    PS3="请选择操作 (输入数字): "
-    select opt in "启动服务" "停止服务" "重启服务" "返回上级"; do
-        case $opt in
-            "启动服务") systemctl start realm; echo "服务已尝试启动。"; break ;;
-            "停止服务") systemctl stop realm; echo "服务已尝试停止。"; break ;;
-            "重启服务") systemctl restart realm; echo "服务已尝试重启。"; break ;;
-            "返回上级") break ;;
-            *) echo "无效选项 $REPLY";;
-        esac
-    done
-}
-
-add_tls_ws_rule() {
-    check_if_installed && check_and_install_pkg "jq" || return 1
-    # ... Function content is the same ...
-}
-
-add_tls_ws_rule_auto() {
-    check_if_installed && check_and_install_pkg "jq" && check_and_install_pkg "socat" || return 1
-    # ... Function content is the same ...
-}
-
-show_menu() {
-    clear
-    local realm_status
-    realm_status=$(get_realm_status_string)
-    
-    cat << EOF
-    ---- Realm 中转一键管理脚本 (v${sh_ver}) ----
-    作者: AiLi1337
-
-    1. 安装/更新 Realm (锁定 v2.5.2 稳定版)
-    2. 添加转发规则
-    3. 删除转发规则
-    4. 显示已有转发规则
-    5. Realm 服务管理 (启/停/重启)
-    6. 添加TLS+WS规则 (手动证书)
-    7. 添加TLS+WS规则 (自动证书)
-    8. 卸载 Realm
-    
-    0. 退出脚本
-    ---------------------------------------------------
-    服务状态: ${realm_status}
-    ---------------------------------------------------
+WantedBy=multi-user.target
 EOF
-    read -p "请输入选项 [0-8]: " choice
+    systemctl daemon-reload
+    systemctl enable realm > /dev/null 2>&1
+    echo "------------------------------------------------------------"
+    echo -e "${G_GREEN}Realm 安装成功！${NC}"
+    echo "默认开机自启已设置，但服务尚未启动，请添加转发规则后手动启动。"
 }
 
+# 2. 添加转发规则
+add_rule() {
+    if ! check_installation; then echo -e "${G_RED}错误: Realm 未安装，请先选择 '1' 进行安装。${NC}"; return; fi
+    echo "请输入要添加的转发规则信息:"
+    read -p "本地监听端口 (例如 54000): " listen_port
+    read -p "远程目标地址 (IP或域名): " remote_addr
+    read -p "远程目标端口 (例如 443): " remote_port
+
+    # --- v2.1 优化：更严格的输入验证 ---
+    if [[ -z "$listen_port" || -z "$remote_addr" || -z "$remote_port" ]]; then echo -e "${G_RED}错误: 任何一项均不能为空。${NC}"; return; fi
+    if ! [[ "$listen_port" =~ ^[0-9]+$ && "$listen_port" -ge 1 && "$listen_port" -le 65535 ]]; then echo -e "${G_RED}错误: 本地监听端口 '${listen_port}' 不是一个有效的端口 (1-65535)。${NC}"; return; fi
+    if ! [[ "$remote_port" =~ ^[0-9]+$ && "$remote_port" -ge 1 && "$remote_port" -le 65535 ]]; then echo -e "${G_RED}错误: 远程目标端口 '${remote_port}' 不是一个有效的端口 (1-65535)。${NC}"; return; fi
+    
+    if grep -q "listen = \"0.0.0.0:${listen_port}\"" ${REALM_CONFIG_PATH} 2>/dev/null; then echo -e "${G_RED}错误: 本地监听端口 ${listen_port} 已存在，无法重复添加。${NC}"; return; fi
+    
+    local formatted_remote_addr
+    if [[ "$remote_addr" == *":"* && "$remote_addr" != \[* ]]; then echo -e "${L_BLUE}检测到IPv6地址，将自动添加括号。${NC}"; formatted_remote_addr="[${remote_addr}]"; else formatted_remote_addr="${remote_addr}"; fi
+    local final_remote_str="${formatted_remote_addr}:${remote_port}"
+    echo -e "\n[[endpoints]]\nlisten = \"0.0.0.0:${listen_port}\"\nremote = \"${final_remote_str}\"" >> ${REALM_CONFIG_PATH}
+    echo -e "${G_GREEN}转发规则添加成功！${NC}"
+    restart_realm
+}
+
+# 3. 删除转发规则
+delete_rule() {
+    if ! check_installation; then echo -e "${G_RED}错误: Realm 未安装。${NC}"; return; fi
+    
+    # --- v2.1 优化：使用更健壮的解析方式 ---
+    local rules_to_display=()
+    while IFS="," read -r listen remote; do
+        rules_to_display+=("$listen,$remote")
+    done < <(paste -d, <(grep 'listen' ${REALM_CONFIG_PATH} | sed 's/.*"\(.*\)".*/\1/') <(grep 'remote' ${REALM_CONFIG_PATH} | sed 's/.*"\(.*\)".*/\1/'))
+
+    if [[ ${#rules_to_display[@]} -eq 0 ]]; then echo -e "${G_YELLOW}当前没有任何转发规则可供删除。${NC}"; return; fi
+
+    echo "当前存在的转发规则如下:"; show_rules true; echo
+    read -p "请输入要删除的规则序号 (可输入多个, 用空格或逗号隔开): " user_input
+    user_input=${user_input//,/' '}
+    read -ra to_delete_indices <<< "$user_input"
+    if [[ ${#to_delete_indices[@]} -eq 0 ]]; then echo -e "${G_YELLOW}未输入任何序号，操作已取消。${NC}"; return; fi
+
+    local -a valid_indices_to_delete; local -a rules_to_delete_summary
+    local max_index=${#rules_to_display[@]}
+    for index_str in "${to_delete_indices[@]}"; do
+        if ! [[ "$index_str" =~ ^[1-9][0-9]*$ && "$index_str" -le "$max_index" ]]; then echo -e "${G_RED}错误: 输入的序号 '${index_str}' 无效或超出范围 (1-${max_index})。${NC}"; return; fi
+        local index=$((index_str))
+        if [[ ! " ${valid_indices_to_delete[*]} " =~ " ${index} " ]]; then
+            valid_indices_to_delete+=("$index")
+            local rule_info="${rules_to_display[$((index - 1))]}"
+            local listen_info="${rule_info%,*}"
+            local remote_info="${rule_info#*,}"
+            rules_to_delete_summary+=("- 规则 #${index}: ${listen_info} -> ${remote_info}")
+        fi
+    done
+
+    if [[ ${#valid_indices_to_delete[@]} -eq 0 ]]; then echo -e "${G_YELLOW}未选择任何有效规则，操作已取消。${NC}"; return; fi
+
+    echo; echo "您选择了删除以下规则:"; for summary in "${rules_to_delete_summary[@]}"; do echo "  $summary"; done
+    echo -e "\n${G_YELLOW}警告：此操作不可逆！${NC}"
+    read -p "确认删除吗? (y/n): " confirm
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then echo "操作已取消。"; return; fi
+    
+    local temp_config_file=$(mktemp)
+    awk '/\[log\]/{p=1} p && !/\[\[endpoints\]\]/{print} /\[\[endpoints\]\]/{p=0}' "${REALM_CONFIG_PATH}" > "${temp_config_file}"
+    for i in "${!rules_to_display[@]}"; do
+        local current_index=$((i + 1))
+        if [[ ! " ${valid_indices_to_delete[*]} " =~ " ${current_index} " ]]; then
+             local rule_info="${rules_to_display[$i]}"
+             local listen_info="${rule_info%,*}"
+             local remote_info="${rule_info#*,}"
+             echo -e "\n[[endpoints]]\nlisten = \"${listen_info}\"\nremote = \"${remote_info}\"" >> "${temp_config_file}"
+        fi
+    done
+    mv "${temp_config_file}" "${REALM_CONFIG_PATH}"
+    
+    if ! grep -q "\[\[endpoints\]\]" "${REALM_CONFIG_PATH}" 2>/dev/null; then echo -e "\n# 所有规则已删除。为确保服务能正常启动，已添加以下占位符。\n#[[endpoints]]\n#listen = \"0.0.0.0:10000\"\n#remote = \"127.0.0.1:10000\"" >> "${REALM_CONFIG_PATH}"; fi
+    
+    IFS=$'\n' sorted_indices=($(sort -n <<<"${valid_indices_to_delete[*]}")); unset IFS
+    echo; echo "规则 #${sorted_indices[*]} 已被删除。"
+    restart_realm
+}
+
+# 4. 显示已有转发规则
+show_rules() {
+    local is_delete_mode=${1:-false}
+    if ! $is_delete_mode; then if ! check_installation; then echo -e "${G_RED}错误: Realm 未安装。${NC}"; return; fi; echo "当前存在的转发规则如下:"; fi
+    
+    local rules_found=false
+    echo "+--------+--------------------------+-----------------------------------+"
+    printf "| %-6s | %-24s | %-33s |\n" "序号" "本地监听" "远程目标"
+    echo "+--------+--------------------------+-----------------------------------+"
+    
+    local index=1
+    # --- v2.1 优化：使用更健壮的解析方式 ---
+    while IFS="," read -r listen remote; do
+        printf "| %-6d | %-24s | %-33s |\n" "$index" "$listen" "$remote"
+        rules_found=true
+        ((index++))
+    done < <(paste -d, <(grep 'listen' ${REALM_CONFIG_PATH} | sed 's/.*"\(.*\)".*/\1/') <(grep 'remote' ${REALM_CONFIG_PATH} | sed 's/.*"\(.*\)".*/\1/'))
+
+    if ! $rules_found; then
+        printf "| %-68s |\n" " (当前无任何转发规则)"
+    fi
+    echo "+--------+--------------------------+-----------------------------------+"
+}
+
+# 5. Realm 服务管理
+manage_service() {
+    if ! check_installation; then echo -e "${G_RED}错误: Realm 未安装。${NC}"; return; fi
+    echo "请选择要执行的操作:"
+    echo " 1) 启动 Realm"; echo " 2) 停止 Realm"; echo " 3) 重启 Realm"
+    echo " 4) 查看状态和日志"; echo " 5) 设置开机自启"; echo " 6) 取消开机自启"
+    read -p "请输入选项 [1-6]: " service_choice
+    case ${service_choice} in
+        1)
+            echo "正在启动 Realm..."; systemctl start realm; sleep 1
+            if systemctl is-active --quiet realm; then echo -e "${G_GREEN}Realm 已成功启动。${NC}"; else echo -e "${G_RED}Realm 启动失败！${NC}"; journalctl -n 10 -u realm --no-pager; fi
+            ;;
+        2)
+            echo "正在停止 Realm..."; systemctl stop realm; echo "Realm 已停止。"
+            ;;
+        3) restart_realm;;
+        4) systemctl status realm;;
+        5) systemctl enable realm; echo "开机自启已设置。";;
+        6) systemctl disable realm; echo "开机自启已取消。";;
+        *) echo -e "${G_RED}无效选项.${NC}";;
+    esac
+}
+
+# 6. 卸载 realm
+uninstall_realm() {
+    if ! check_installation; then echo -e "${G_RED}错误: Realm 未安装，无需卸载。${NC}"; return; fi
+    read -p "确定要完全卸载 Realm 吗？此操作不可逆！(y/n): " confirm
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then echo "操作已取消。"; return; fi
+    systemctl stop realm; systemctl disable realm
+    rm -f ${REALM_BIN_PATH} ${REALM_SERVICE_PATH}; rm -rf ${REALM_CONFIG_DIR}
+    systemctl daemon-reload
+    echo -e "${G_GREEN}Realm 已成功卸载。${NC}"
+}
+
+# 主菜单
+show_menu() {
+    clear; local state_color; local realm_state
+    if check_installation; then
+        if systemctl is-active --quiet realm; then state_color=${G_GREEN}; realm_state="运行中"; else state_color=${G_RED}; realm_state="已停止"; fi
+    else state_color=${G_YELLOW}; realm_state="未安装"; fi
+    echo "---- Realm 中转一键管理脚本 (v2.1) ----"
+    echo " 作者: AiLi1337"
+    echo
+    echo "1. 安装 Realm"
+    echo "2. 添加转发规则"
+    echo "3. 删除转发规则"
+    echo "4. 显示已有转发规则"
+    echo "5. Realm 服务管理 (启/停/状态/自启)"
+    echo "6. 卸载 Realm"
+    echo "-----------------------------------------"
+    echo "0. 退出脚本"
+    echo "-----------------------------------------"
+    echo -e "服务状态: ${state_color}${realm_state}${NC}"
+    echo "-----------------------------------------"
+}
+
+# 主循环
 main() {
     check_root
     while true; do
         show_menu
-        case $choice in
-            1) install_realm ;;
-            2) add_forwarding_rule ;;
-            3) delete_forwarding_rule ;;
-            4) display_forwarding_rules ;;
-            5) manage_realm_service ;;
-            6) add_tls_ws_rule ;;
-            7) add_tls_ws_rule_auto ;;
-            8) uninstall_realm ;;
-            0) exit 0 ;;
-            *) echo -e "\n${red}无效输入，请重新输入${reset}" ;;
+        read -p "请输入选项 [0-6]: " choice
+        case ${choice} in
+            1) install_realm ;; 2) add_rule ;; 3) delete_rule ;; 4) show_rules ;; 5) manage_service ;; 6) uninstall_realm ;; 0) exit 0 ;;
+            *) echo -e "${G_RED}无效输入，请重新输入!${NC}" ;;
         esac
-        echo -e "\n按任意键返回主菜单..."
-        read -n 1
+        echo; read -p "按 Enter 键返回主菜单..."
     done
 }
 
+# 启动脚本
 main

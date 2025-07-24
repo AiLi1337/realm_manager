@@ -159,7 +159,15 @@ install_acme_sh() {
     fi
     
     echo "正在从官方源下载并安装 acme.sh..."
-    if curl -fsSL ${ACME_SH_INSTALL_URL} | sh -s email=admin@$(hostname -f) 2>/dev/null; then
+    
+    # 使用有效的邮箱地址格式
+    local install_email="admin@example.com"
+    read -p "请输入您的邮箱地址 (用于证书通知，默认: ${install_email}): " user_email
+    if [[ -n "$user_email" && "$user_email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        install_email="$user_email"
+    fi
+    
+    if curl -fsSL ${ACME_SH_INSTALL_URL} | sh -s email="$install_email"; then
         echo -e "${G_GREEN}acme.sh 安装成功！${NC}"
         mkdir -p "${SSL_CERT_DIR}"
         
@@ -701,6 +709,30 @@ uninstall_realm() {
     echo -e "${G_GREEN}Realm 已成功卸载。${NC}"
 }
 
+# 重置 acme.sh 账户
+reset_acme_account() {
+    if ! check_acme_installation; then
+        echo -e "${G_RED}错误: acme.sh 未安装。${NC}"
+        return
+    fi
+    
+    echo "重置 acme.sh 账户信息"
+    echo "------------------------------------------------------------"
+    echo -e "${G_YELLOW}警告: 此操作将删除所有现有的 ACME 账户信息！${NC}"
+    read -p "确认继续吗？(y/n): " confirm
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "操作已取消。"
+        return
+    fi
+    
+    # 删除账户信息
+    rm -rf ~/.acme.sh/ca/
+    rm -f ~/.acme.sh/account.conf
+    
+    echo -e "${G_GREEN}ACME 账户信息已重置。${NC}"
+    echo "下次申请证书时将重新注册账户。"
+}
+
 # 7. SSL 证书管理菜单
 ssl_certificate_menu() {
     while true; do
@@ -715,11 +747,12 @@ ssl_certificate_menu() {
         echo "6. 上传自定义证书"
         echo "7. 设置自动续订"
         echo "8. 查看续订日志"
+        echo "9. 重置 ACME 账户"
         echo "-----------------------------------------"
         echo "0. 返回主菜单"
         echo "-----------------------------------------"
         
-        read -p "请输入选项 [0-8]: " ssl_choice
+        read -p "请输入选项 [0-9]: " ssl_choice
         case ${ssl_choice} in
             1) install_acme_sh ;;
             2) request_ssl_certificate ;;
@@ -729,6 +762,7 @@ ssl_certificate_menu() {
             6) upload_custom_certificate ;;
             7) setup_auto_renew ;;
             8) view_renew_logs ;;
+            9) reset_acme_account ;;
             0) break ;;
             *) echo -e "${G_RED}无效输入，请重新输入!${NC}" ;;
         esac
@@ -769,16 +803,16 @@ request_ssl_certificate() {
     esac
     
     echo "请选择 CA 提供商:"
-    echo " 1) Let's Encrypt (推荐)"
-    echo " 2) ZeroSSL"
-    echo " 3) Buypass"
+    echo " 1) Let's Encrypt (推荐，免费)"
+    echo " 2) Buypass (免费)"
+    echo " 3) Google Trust Services (免费)"
     read -p "请选择 CA [1-3]: " ca_choice
     
     local ca_server=""
     case $ca_choice in
         1) ca_server="letsencrypt" ;;
-        2) ca_server="zerossl" ;;
-        3) ca_server="buypass" ;;
+        2) ca_server="buypass" ;;
+        3) ca_server="google" ;;
         *) 
             echo -e "${G_YELLOW}使用默认 CA: Let's Encrypt${NC}"
             ca_server="letsencrypt"
@@ -797,7 +831,10 @@ request_ssl_certificate() {
     echo "------------------------------------------------------------"
     
     # 设置 CA 服务器
-    ${ACME_SH_PATH} --set-default-ca --server ${ca_server}
+    echo "正在设置 CA 服务器为: ${ca_server}"
+    if ! ${ACME_SH_PATH} --set-default-ca --server ${ca_server}; then
+        echo -e "${G_YELLOW}警告: CA 服务器设置可能失败，继续使用默认设置...${NC}"
+    fi
     
     case $verify_method in
         1)
@@ -821,7 +858,23 @@ request_ssl_certificate() {
                 done
             fi
             
-            if ${ACME_SH_PATH} --issue -d "$domain" --standalone --httpport 80; then
+            # 检查账户是否已注册，如果没有则先注册
+            echo "正在检查 ACME 账户状态..."
+            if ! ${ACME_SH_PATH} --list 2>/dev/null | grep -q "Main_Domain"; then
+                echo "正在注册 ACME 账户..."
+                local reg_email="admin@example.com"
+                read -p "请输入用于注册的邮箱地址 (默认: ${reg_email}): " user_reg_email
+                if [[ -n "$user_reg_email" && "$user_reg_email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                    reg_email="$user_reg_email"
+                fi
+                
+                if ! ${ACME_SH_PATH} --register-account -m "$reg_email"; then
+                    echo -e "${G_YELLOW}账户注册可能失败，但继续尝试申请证书...${NC}"
+                fi
+            fi
+            
+            echo "正在申请证书..."
+            if ${ACME_SH_PATH} --issue -d "$domain" --standalone --httpport 80 --force; then
                 echo "证书申请成功，正在安装证书..."
                 if ${ACME_SH_PATH} --install-cert -d "$domain" \
                     --cert-file "${cert_dir}/cert.pem" \
@@ -844,10 +897,16 @@ request_ssl_certificate() {
             else
                 echo -e "${G_RED}证书申请失败！${NC}"
                 echo "可能的原因："
-                echo "1. 域名解析不正确"
-                echo "2. 80端口被占用或无法访问"
-                echo "3. 防火墙阻止了80端口"
-                echo "4. 网络连接问题"
+                echo "1. 域名解析不正确 - 请确保域名指向本服务器IP"
+                echo "2. 80端口被占用或无法访问 - 请检查防火墙设置"
+                echo "3. 邮箱地址格式问题 - 请使用有效的邮箱地址"
+                echo "4. 网络连接问题 - 请检查服务器网络连接"
+                echo "5. CA 服务器问题 - 可以尝试更换其他 CA 提供商"
+                
+                # 显示详细错误信息
+                echo
+                echo "详细错误信息请查看："
+                echo "journalctl -u acme.sh --no-pager -n 20"
                 
                 # 重启之前停止的服务
                 for service in nginx apache2 httpd; do
@@ -861,13 +920,35 @@ request_ssl_certificate() {
             echo "使用 DNS-01 验证方式申请证书..."
             echo "开始 DNS 验证流程..."
             
-            if ${ACME_SH_PATH} --issue -d "$domain" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please; then
+            # 检查账户是否已注册
+            echo "正在检查 ACME 账户状态..."
+            if ! ${ACME_SH_PATH} --list 2>/dev/null | grep -q "Main_Domain"; then
+                echo "正在注册 ACME 账户..."
+                local reg_email="admin@example.com"
+                read -p "请输入用于注册的邮箱地址 (默认: ${reg_email}): " user_reg_email
+                if [[ -n "$user_reg_email" && "$user_reg_email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                    reg_email="$user_reg_email"
+                fi
+                
+                if ! ${ACME_SH_PATH} --register-account -m "$reg_email"; then
+                    echo -e "${G_YELLOW}账户注册可能失败，但继续尝试申请证书...${NC}"
+                fi
+            fi
+            
+            echo "开始 DNS 手动验证模式..."
+            if ${ACME_SH_PATH} --issue -d "$domain" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please --force; then
                 echo
                 echo -e "${G_YELLOW}请按照上述提示添加 DNS TXT 记录到您的域名解析中。${NC}"
+                echo -e "${G_YELLOW}记录格式示例：${NC}"
+                echo -e "${G_YELLOW}类型: TXT${NC}"
+                echo -e "${G_YELLOW}名称: _acme-challenge.${domain}${NC}"
+                echo -e "${G_YELLOW}值: (上面显示的长字符串)${NC}"
+                echo
                 echo -e "${G_YELLOW}添加完成后，请等待几分钟让DNS记录生效，然后按任意键继续...${NC}"
                 read -n 1
                 echo
                 
+                echo "正在验证 DNS 记录..."
                 if ${ACME_SH_PATH} --renew -d "$domain" --yes-I-know-dns-manual-mode-enough-go-ahead-please; then
                     echo "证书申请成功，正在安装证书..."
                     if ${ACME_SH_PATH} --install-cert -d "$domain" \
@@ -883,12 +964,20 @@ request_ssl_certificate() {
                 else
                     echo -e "${G_RED}DNS 验证失败！${NC}"
                     echo "请检查："
-                    echo "1. DNS TXT 记录是否正确添加"
-                    echo "2. DNS 记录是否已生效（可使用 nslookup 或 dig 命令检查）"
-                    echo "3. 等待时间是否足够（建议等待5-10分钟）"
+                    echo "1. DNS TXT 记录是否正确添加到域名解析中"
+                    echo "2. 记录名称是否为: _acme-challenge.${domain}"
+                    echo "3. DNS 记录是否已生效（可使用以下命令检查）："
+                    echo "   nslookup -type=TXT _acme-challenge.${domain}"
+                    echo "   dig TXT _acme-challenge.${domain}"
+                    echo "4. 等待时间是否足够（建议等待5-10分钟）"
+                    echo "5. 邮箱地址是否有效"
                 fi
             else
                 echo -e "${G_RED}DNS 验证初始化失败。${NC}"
+                echo "可能的原因："
+                echo "1. 邮箱地址格式无效"
+                echo "2. 网络连接问题"
+                echo "3. CA 服务器问题"
             fi
             ;;
         *)

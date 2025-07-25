@@ -260,6 +260,204 @@ add_rule() {
     esac
 }
 
+# 3. WSS 隧道配置
+add_wss_tunnel_rule() {
+    if ! check_installation; then 
+        echo -e "${G_RED}错误: Realm 未安装，请先选择 '1' 进行安装。${NC}"
+        return
+    fi
+    
+    echo "请选择 WSS 隧道配置类型:"
+    echo " 1) 配置中转端 (B端服务器 - 需要域名和证书)"
+    echo " 2) 配置落地端 (A端服务器 - 客户端连接)"
+    echo " 3) 查看配置示例"
+    read -p "请选择类型 [1-3]: " tunnel_type
+    
+    case $tunnel_type in
+        1) add_wss_tunnel_relay_side ;;
+        2) add_wss_tunnel_landing_side ;;
+        3) show_wss_tunnel_examples ;;
+        *) echo -e "${G_RED}无效选项。${NC}" ;;
+    esac
+}
+
+# 3.1 配置 WSS 隧道中转端 (B端服务器)
+add_wss_tunnel_relay_side() {
+    echo "配置 WSS 隧道中转端 (B端服务器):"
+    echo "------------------------------------------------------------"
+    echo -e "${G_YELLOW}注意: 中转端需要域名和SSL证书！${NC}"
+    echo
+    
+    read -p "监听端口 (例如 54321): " listen_port
+    read -p "转发目标地址 (例如 127.0.0.1): " target_addr
+    read -p "转发目标端口 (例如 12345): " target_port
+    read -p "域名 (必须已申请证书): " domain
+    read -p "WebSocket 路径 (例如 /somepath): " ws_path
+    
+    # 参数验证
+    if [[ -z "$listen_port" || -z "$target_addr" || -z "$target_port" || -z "$domain" || -z "$ws_path" ]]; then 
+        echo -e "${G_RED}错误: 所有参数都不能为空。${NC}"
+        return
+    fi
+    
+    # 验证端口格式
+    if ! [[ "$listen_port" =~ ^[0-9]+$ && "$listen_port" -ge 1 && "$listen_port" -le 65535 ]]; then 
+        echo -e "${G_RED}错误: 监听端口无效。${NC}"
+        return
+    fi
+    
+    if ! [[ "$target_port" =~ ^[0-9]+$ && "$target_port" -ge 1 && "$target_port" -le 65535 ]]; then 
+        echo -e "${G_RED}错误: 目标端口无效。${NC}"
+        return
+    fi
+    
+    # 验证域名格式
+    if ! validate_domain "$domain"; then
+        echo -e "${G_RED}错误: 域名格式无效。${NC}"
+        return
+    fi
+    
+    # 检查证书是否存在
+    local cert_path="${SSL_CERT_DIR}/${domain}/fullchain.pem"
+    local key_path="${SSL_CERT_DIR}/${domain}/privkey.pem"
+    
+    if [[ ! -f "$cert_path" || ! -f "$key_path" ]]; then
+        echo -e "${G_RED}错误: 域名 ${domain} 的SSL证书不存在！${NC}"
+        echo -e "${G_YELLOW}请先使用 '7. SSL证书管理' 申请证书。${NC}"
+        echo -e "${G_YELLOW}证书路径应为: ${cert_path}${NC}"
+        echo -e "${G_YELLOW}私钥路径应为: ${key_path}${NC}"
+        return
+    fi
+    
+    # 检查端口是否已存在
+    if grep -q "listen = \".*:${listen_port}\"" ${REALM_CONFIG_PATH} 2>/dev/null; then 
+        echo -e "${G_RED}错误: 监听端口 ${listen_port} 已存在。${NC}"
+        return
+    fi
+    
+    # 构建配置
+    local listen_transport="wss;host=${domain};path=${ws_path};cert=${cert_path};key=${key_path}"
+    
+    # 添加配置
+    echo -e "\n[[endpoints]]\nlisten = \"[::]:${listen_port}\"\nremote = \"${target_addr}:${target_port}\"\nlisten_transport = \"${listen_transport}\"" >> ${REALM_CONFIG_PATH}
+    
+    echo -e "${G_GREEN}WSS 隧道中转端配置添加成功！${NC}"
+    echo
+    echo "=== 中转端配置摘要 ==="
+    echo "监听端口: [::]:${listen_port}"
+    echo "转发目标: ${target_addr}:${target_port}"
+    echo "域名: ${domain}"
+    echo "WebSocket路径: ${ws_path}"
+    echo "SSL证书: ${cert_path}"
+    echo "========================"
+    echo
+    echo -e "${G_YELLOW}请记录以下信息，配置落地端时需要：${NC}"
+    local server_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo '请手动获取')
+    echo "- 中转端公网IP: ${server_ip}"
+    echo "- 监听端口: ${listen_port}"
+    echo "- 域名: ${domain}"
+    echo "- WebSocket路径: ${ws_path}"
+    
+    restart_realm
+}
+
+# 3.2 配置 WSS 隧道落地端 (A端服务器)
+add_wss_tunnel_landing_side() {
+    echo "配置 WSS 隧道落地端 (A端服务器):"
+    echo "------------------------------------------------------------"
+    echo -e "${G_YELLOW}注意: 需要中转端的连接信息！${NC}"
+    echo
+    
+    read -p "本地监听端口 (例如 12345): " listen_port
+    read -p "中转端公网IP地址: " remote_ip
+    read -p "中转端监听端口 (例如 54321): " remote_port
+    read -p "域名 (与中转端相同): " domain
+    read -p "WebSocket路径 (与中转端相同，例如 /somepath): " ws_path
+    
+    # 参数验证
+    if [[ -z "$listen_port" || -z "$remote_ip" || -z "$remote_port" || -z "$domain" || -z "$ws_path" ]]; then 
+        echo -e "${G_RED}错误: 所有参数都不能为空。${NC}"
+        return
+    fi
+    
+    # 验证端口格式
+    if ! [[ "$listen_port" =~ ^[0-9]+$ && "$listen_port" -ge 1 && "$listen_port" -le 65535 ]]; then 
+        echo -e "${G_RED}错误: 本地监听端口无效。${NC}"
+        return
+    fi
+    
+    if ! [[ "$remote_port" =~ ^[0-9]+$ && "$remote_port" -ge 1 && "$remote_port" -le 65535 ]]; then 
+        echo -e "${G_RED}错误: 远程端口无效。${NC}"
+        return
+    fi
+    
+    # 验证IP地址格式（简单验证）
+    if ! [[ "$remote_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo -e "${G_YELLOW}警告: IP地址格式可能无效，请确认输入正确。${NC}"
+    fi
+    
+    # 验证域名格式
+    if ! validate_domain "$domain"; then
+        echo -e "${G_RED}错误: 域名格式无效。${NC}"
+        return
+    fi
+    
+    # 检查端口是否已存在
+    if grep -q "listen = \".*:${listen_port}\"" ${REALM_CONFIG_PATH} 2>/dev/null; then 
+        echo -e "${G_RED}错误: 本地监听端口 ${listen_port} 已存在。${NC}"
+        return
+    fi
+    
+    # 构建配置
+    local remote_transport="wss;host=${domain};path=${ws_path};sni=${domain}"
+    
+    # 添加配置
+    echo -e "\n[[endpoints]]\nlisten = \"[::]:${listen_port}\"\nremote = \"${remote_ip}:${remote_port}\"\nremote_transport = \"${remote_transport}\"" >> ${REALM_CONFIG_PATH}
+    
+    echo -e "${G_GREEN}WSS 隧道落地端配置添加成功！${NC}"
+    echo
+    echo "=== 落地端配置摘要 ==="
+    echo "本地监听: [::]:${listen_port}"
+    echo "中转端地址: ${remote_ip}:${remote_port}"
+    echo "域名: ${domain}"
+    echo "WebSocket路径: ${ws_path}"
+    echo "========================"
+    
+    restart_realm
+}
+
+# 3.3 显示 WSS 隧道配置示例
+show_wss_tunnel_examples() {
+    echo "WSS 隧道配置示例:"
+    echo "============================================================"
+    echo
+    echo -e "${G_GREEN}中转端 (B端服务器) 配置示例:${NC}"
+    echo "[[endpoints]]"
+    echo "listen = \"[::]:54321\""
+    echo "remote = \"127.0.0.1:12345\""
+    echo "listen_transport = \"wss;host=yourdomain.com;path=/somepath;cert=/etc/realm/ssl/yourdomain.com/fullchain.pem;key=/etc/realm/ssl/yourdomain.com/privkey.pem\""
+    echo
+    echo -e "${G_GREEN}落地端 (A端服务器) 配置示例:${NC}"
+    echo "[[endpoints]]"
+    echo "listen = \"[::]:12345\""
+    echo "remote = \"B端公网IP:54321\""
+    echo "remote_transport = \"wss;host=yourdomain.com;path=/somepath;sni=yourdomain.com\""
+    echo
+    echo "============================================================"
+    echo -e "${G_YELLOW}配置要点:${NC}"
+    echo "1. 中转端需要域名和SSL证书"
+    echo "2. host、path、sni 参数必须在两端保持一致"
+    echo "3. 不要使用 insecure 参数，确保安全性"
+    echo "4. 域名必须解析到中转端服务器IP"
+    echo "5. 中转端先配置并启动，再配置落地端"
+    echo
+    echo -e "${G_YELLOW}部署流程:${NC}"
+    echo "第一步: 在中转端服务器申请SSL证书"
+    echo "第二步: 配置中转端WSS隧道"
+    echo "第三步: 配置落地端WSS隧道"
+    echo "第四步: 分别启动两端服务"
+}
+
 # 2.1 添加 TCP 转发规则
 add_tcp_rule() {
     echo "请输入要添加的 TCP 转发规则信息:"
@@ -430,7 +628,7 @@ add_wss_rule() {
     restart_realm
 }
 
-# 3. 删除转发规则
+# 4. 删除转发规则
 delete_rule() {
     if ! check_installation; then 
         echo -e "${G_RED}错误: Realm 未安装。${NC}"
@@ -572,7 +770,7 @@ delete_rule() {
     restart_realm
 }
 
-# 4. 显示已有转发规则
+# 5. 显示已有转发规则
 show_rules() {
     local is_delete_mode=${1:-false}
     if ! $is_delete_mode; then 
@@ -593,6 +791,8 @@ show_rules() {
     local remote_addr=""
     local protocol="TCP"
     local domain=""
+    local listen_transport=""
+    local remote_transport=""
     
     while IFS= read -r line; do
         line=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
@@ -600,11 +800,28 @@ show_rules() {
         if [[ "$line" == "[[endpoints]]" ]]; then
             if [[ -n "$listen_addr" && -n "$remote_addr" ]]; then
                 local display_protocol="$protocol"
-                if [[ -n "$domain" && "$protocol" == "wss" ]]; then
+                
+                # 检查是否为 WSS 隧道配置
+                if [[ -n "$listen_transport" && "$listen_transport" =~ wss ]]; then
+                    if [[ "$listen_transport" =~ host=([^;]+) ]]; then
+                        local host="${BASH_REMATCH[1]}"
+                        display_protocol="WSS隧道-中转(${host})"
+                    else
+                        display_protocol="WSS隧道-中转"
+                    fi
+                elif [[ -n "$remote_transport" && "$remote_transport" =~ wss ]]; then
+                    if [[ "$remote_transport" =~ host=([^;]+) ]]; then
+                        local host="${BASH_REMATCH[1]}"
+                        display_protocol="WSS隧道-落地(${host})"
+                    else
+                        display_protocol="WSS隧道-落地"
+                    fi
+                elif [[ -n "$domain" && "$protocol" == "wss" ]]; then
                     display_protocol="WSS($domain)"
                 elif [[ "$protocol" == "ws" ]]; then
                     display_protocol="WS"
                 fi
+                
                 printf "| %-6d | %-24s | %-33s | %-8s |\n" "$index" "$listen_addr" "$remote_addr" "$display_protocol"
                 rules_found=true
                 ((index++))
@@ -613,6 +830,8 @@ show_rules() {
             remote_addr=""
             protocol="TCP"
             domain=""
+            listen_transport=""
+            remote_transport=""
         elif [[ "$line" =~ ^listen[[:space:]]*=[[:space:]]*\"(.*)\" ]]; then
             listen_addr="${BASH_REMATCH[1]}"
         elif [[ "$line" =~ ^remote[[:space:]]*=[[:space:]]*\"(.*)\" ]]; then
@@ -621,16 +840,37 @@ show_rules() {
             protocol="${BASH_REMATCH[1]}"
         elif [[ "$line" =~ ^domain[[:space:]]*=[[:space:]]*\"(.*)\" ]]; then
             domain="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^listen_transport[[:space:]]*=[[:space:]]*\"(.*)\" ]]; then
+            listen_transport="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^remote_transport[[:space:]]*=[[:space:]]*\"(.*)\" ]]; then
+            remote_transport="${BASH_REMATCH[1]}"
         fi
     done < "${REALM_CONFIG_PATH}"
     
     if [[ -n "$listen_addr" && -n "$remote_addr" ]]; then
         local display_protocol="$protocol"
-        if [[ -n "$domain" && "$protocol" == "wss" ]]; then
+        
+        # 检查是否为 WSS 隧道配置
+        if [[ -n "$listen_transport" && "$listen_transport" =~ wss ]]; then
+            if [[ "$listen_transport" =~ host=([^;]+) ]]; then
+                local host="${BASH_REMATCH[1]}"
+                display_protocol="WSS隧道-中转(${host})"
+            else
+                display_protocol="WSS隧道-中转"
+            fi
+        elif [[ -n "$remote_transport" && "$remote_transport" =~ wss ]]; then
+            if [[ "$remote_transport" =~ host=([^;]+) ]]; then
+                local host="${BASH_REMATCH[1]}"
+                display_protocol="WSS隧道-落地(${host})"
+            else
+                display_protocol="WSS隧道-落地"
+            fi
+        elif [[ -n "$domain" && "$protocol" == "wss" ]]; then
             display_protocol="WSS($domain)"
         elif [[ "$protocol" == "ws" ]]; then
             display_protocol="WS"
         fi
+        
         printf "| %-6d | %-24s | %-33s | %-8s |\n" "$index" "$listen_addr" "$remote_addr" "$display_protocol"
         rules_found=true
     fi
@@ -641,7 +881,7 @@ show_rules() {
     echo "+--------+--------------------------+-----------------------------------+----------+"
 }
 
-# 5. Realm 服务管理
+# 6. Realm 服务管理
 manage_service() {
     if ! check_installation; then 
         echo -e "${G_RED}错误: Realm 未安装。${NC}"
@@ -688,7 +928,7 @@ manage_service() {
     esac
 }
 
-# 6. 卸载 realm
+# 7. 卸载 realm
 uninstall_realm() {
     if ! check_installation; then 
         echo -e "${G_RED}错误: Realm 未安装，无需卸载。${NC}"
@@ -733,7 +973,7 @@ reset_acme_account() {
     echo "下次申请证书时将重新注册账户。"
 }
 
-# 7. SSL 证书管理菜单
+# 8. SSL 证书管理菜单
 ssl_certificate_menu() {
     while true; do
         clear
@@ -1265,11 +1505,12 @@ show_menu() {
     echo
     echo "1. 安装 Realm"
     echo "2. 添加转发规则 (TCP/WS/WSS)"
-    echo "3. 删除转发规则"
-    echo "4. 显示已有转发规则"
-    echo "5. Realm 服务管理 (启/停/状态/自启)"
-    echo "6. 卸载 Realm"
-    echo "7. SSL 证书管理"
+    echo "3. 添加 WSS 隧道配置 (中转/落地)"
+    echo "4. 删除转发规则"
+    echo "5. 显示已有转发规则"
+    echo "6. Realm 服务管理 (启/停/状态/自启)"
+    echo "7. 卸载 Realm"
+    echo "8. SSL 证书管理"
     echo "-----------------------------------------"
     echo "0. 退出脚本"
     echo "-----------------------------------------"
@@ -1289,15 +1530,16 @@ main() {
     check_root
     while true; do
         show_menu
-        read -p "请输入选项 [0-7]: " choice
+        read -p "请输入选项 [0-8]: " choice
         case ${choice} in
             1) install_realm ;; 
             2) add_rule ;; 
-            3) delete_rule ;; 
-            4) show_rules ;; 
-            5) manage_service ;; 
-            6) uninstall_realm ;; 
-            7) ssl_certificate_menu ;;
+            3) add_wss_tunnel_rule ;;
+            4) delete_rule ;; 
+            5) show_rules ;; 
+            6) manage_service ;; 
+            7) uninstall_realm ;; 
+            8) ssl_certificate_menu ;;
             0) exit 0 ;;
             *) echo -e "${G_RED}无效输入，请重新输入!${NC}" ;;
         esac
